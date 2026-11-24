@@ -1,0 +1,600 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  role      String   @default("editor")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Source {
+  id          String     @id @default(cuid())
+  name        String
+  url         String     @unique
+  rssUrl      String?
+  active      Boolean    @default(true)
+  autoPublish Boolean    @default(false)
+  autoModel   String     @default("openai")
+  lastFetched DateTime?
+  createdAt   DateTime   @default(now())
+  newsItems   NewsItem[]
+
+  // ── Configuração do pipeline (Fase 1) ──
+  pipelineEnabled  Boolean     @default(false)
+  collectType      CollectType @default(CRAWLER)
+  categories       String[]    @default([])
+  priorityClubs    String[]    @default([])
+  frequencyMinutes Int         @default(30)
+  rules            Json?
+  lastError        String?
+  lastPipelineRun  DateTime?
+  candidates       Candidate[]
+}
+
+enum CollectType {
+  RSS
+  CRAWLER
+  SIMULATED
+}
+
+/// Candidato bruto normalizado, separado do NewsItem do radar manual.
+/// Imutável após recolha; o estado de triagem vive no PipelineRun.
+model Candidate {
+  id            String        @id @default(cuid())
+  source        Source        @relation(fields: [sourceId], references: [id])
+  sourceId      String
+  title         String
+  url           String        @unique
+  summary       String?
+  contentText   String?
+  imageUrl      String?
+  publishedAt   DateTime?
+  lang          String        @default("pt-PT")
+  simhash       String?
+  raw           Json?
+  duplicateOf   Candidate?    @relation("CandidateDupes", fields: [duplicateOfId], references: [id])
+  duplicateOfId String?
+  duplicates    Candidate[]   @relation("CandidateDupes")
+  // Origem do candidato: "crawler" (recolha automática) ou "editor" (pedido via Telegram).
+  origin        String        @default("crawler")
+  fetchedAt     DateTime      @default(now())
+  createdAt     DateTime      @default(now())
+  runs          PipelineRun[]
+  transcript    Transcript?
+
+  @@index([sourceId])
+  @@index([simhash])
+  @@index([fetchedAt])
+}
+
+/// Transcrição do áudio de um vídeo de FONTE PRIMÁRIA (conferência de imprensa do clube).
+/// Guardada apenas para extracção de factos e verificação — NUNCA é publicada, tal como o
+/// contentText do candidato. O que sai para o site são declarações com atribuição.
+model Transcript {
+  id          String    @id @default(cuid())
+  candidate   Candidate @relation(fields: [candidateId], references: [id])
+  candidateId String    @unique
+  /// Endereço do vídeo de onde saiu o áudio (para auditoria).
+  mediaUrl    String
+  /// Texto corrido devolvido pelo motor de transcrição.
+  text        String
+  /// Duração do áudio, em segundos.
+  durationSec Int
+  /// Motor usado (ex.: "whisper-1") e custo em euros, para o contador por notícia.
+  model       String
+  costEur     Float     @default(0)
+  createdAt   DateTime  @default(now())
+}
+
+model NewsItem {
+  id             String          @id @default(cuid())
+  title          String
+  url            String          @unique
+  sourceId       String
+  source         Source          @relation(fields: [sourceId], references: [id])
+  publishedAt    DateTime?
+  fetchedAt      DateTime        @default(now())
+  status         String          @default("nova")
+  summary        String?
+  imageUrl       String?
+  createdAt      DateTime        @default(now())
+  generatedTexts GeneratedText[]
+}
+
+model GeneratedText {
+  id         String   @id @default(cuid())
+  newsItemId String
+  newsItem   NewsItem @relation(fields: [newsItemId], references: [id])
+  modelo     String
+  formato    String   @default("noticia")
+  tom        String   @default("informativo")
+  instrucoes String?
+  conteudo   String
+  status     String   @default("gerado")
+  createdAt  DateTime @default(now())
+}
+
+model Log {
+  id        String   @id @default(cuid())
+  action    String
+  details   String?
+  userId    String?
+  createdAt DateTime @default(now())
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  sensitive Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+model IgnoredUrl {
+  id        String   @id @default(cuid())
+  url       String   @unique
+  createdAt DateTime @default(now())
+}
+
+// Social Hub
+
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+  X
+  LINKEDIN
+  THREADS
+  TIKTOK
+  YOUTUBE
+  PINTEREST
+}
+
+enum SocialAccountStatus {
+  ACTIVE
+  EXPIRED
+  ERROR
+}
+
+enum SocialPostMode {
+  AUTO
+  MANUAL
+}
+
+enum SocialPostStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHED
+  PARTIAL
+  FAILED
+}
+
+enum SocialTargetStatus {
+  PENDING
+  SCHEDULED
+  PUBLISHED
+  FAILED
+}
+
+enum SocialLogStatus {
+  SUCCESS
+  FAILURE
+}
+
+model SocialAccount {
+  id             String              @id @default(cuid())
+  platform       SocialPlatform
+  accountId      String
+  accountName    String
+  avatarUrl      String?
+  accessToken    String
+  refreshToken   String?
+  tokenExpiresAt DateTime?
+  status         SocialAccountStatus @default(ACTIVE)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  targets        SocialPostTarget[]
+  logs           SocialPublishLog[]
+
+  @@unique([platform, accountId])
+}
+
+model SocialPost {
+  id                  String             @id @default(cuid())
+  text                String
+  linkUrl             String?
+  imageUrl            String?
+  videoUrl            String?
+  mode                SocialPostMode     @default(MANUAL)
+  status              SocialPostStatus   @default(DRAFT)
+  scheduledAt         DateTime?
+  telegramMessageId   String? // id da mensagem do cartão social no Telegram (para editar por resposta)
+  editPromptMessageId String? // id da mensagem "responde com o texto novo" (também aceita resposta)
+  // Origem no pipeline editorial (nullable: posts criados manualmente no Social Hub não têm).
+  pipelineRun         PipelineRun?       @relation(fields: [pipelineRunId], references: [id], onDelete: SetNull)
+  pipelineRunId       String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  targets             SocialPostTarget[]
+  logs                SocialPublishLog[]
+
+  @@index([pipelineRunId])
+}
+
+model SocialPostTarget {
+  id          String             @id @default(cuid())
+  post        SocialPost         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId      String
+  account     SocialAccount      @relation(fields: [accountId], references: [id])
+  accountId   String
+  status      SocialTargetStatus @default(PENDING)
+  externalId  String?
+  publishedAt DateTime?
+}
+
+model SocialPublishLog {
+  id        String          @id @default(cuid())
+  post      SocialPost      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId    String
+  account   SocialAccount   @relation(fields: [accountId], references: [id])
+  accountId String
+  platform  SocialPlatform
+  status    SocialLogStatus
+  response  Json?
+  error     String?
+  createdAt DateTime        @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────
+// Pipeline Editorial (Fase 0) — ver docs/pipeline/arquitetura.md
+// ─────────────────────────────────────────────────────────────
+
+enum PipelineState {
+  COLLECTED
+  DEDUP_OK
+  RELEVANT
+  FACTS_EXTRACTED
+  FACTS_QA_OK
+  WRITTEN
+  EDITORIAL_QA_OK
+  REVISED_OK
+  SEO_QA_OK
+  IMAGE_READY
+  IMAGE_QA_OK
+  WP_DRAFTED
+  AWAITING_TOPIC_APPROVAL
+  TOPIC_APPROVED
+  AWAITING_TRANSCRIPT_APPROVAL
+  TRANSCRIBED
+  AWAITING_APPROVAL
+  APPROVED_ALL
+  TEXT_REJECTED
+  IMAGE_REJECTED
+  SAVED_DRAFT
+  PUBLISHED
+  SOCIAL_DRAFTED
+  SOCIAL_QA_OK
+  DISTRIBUTED
+  DONE
+  PAUSED
+  ARCHIVED
+  FAILED
+}
+
+enum AgentName {
+  SOURCE_MANAGER
+  TRANSCRICAO
+  DUPLICATE_DETECTOR
+  RELEVANCE
+  FACT_EXTRACTION
+  FACT_QA
+  ARTICLE_WRITER
+  EDITORIAL_QA
+  REVISER
+  AUDITOR
+  SEO_QA
+  IMAGE_RESEARCH
+  IMAGE_QA
+  WP_DRAFT_PUBLISHER
+  TELEGRAM_APPROVAL
+  SOCIAL_PUBLISHER
+  SOCIAL_QA
+  SITE_HEALTH
+  ORCHESTRATOR
+}
+
+model PipelineRun {
+  id           String           @id @default(cuid())
+  state        PipelineState    @default(COLLECTED)
+  currentAgent AgentName?
+  // Candidato de origem do pipeline (Fase 1+). newsItemId fica para ligações legacy.
+  candidate    Candidate?       @relation(fields: [candidateId], references: [id])
+  candidateId  String?
+  newsItemId   String?
+  error        String?
+  attempts     Int              @default(0)
+  meta         Json?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  decisions    AgentDecision[]
+  ledger       FactLedger?
+  article      Article?
+  qaReports    QAReport[]
+  wpDraft      WpDraft?
+  approval     ApprovalRequest?
+  socialPosts  SocialPost[]
+  image        ImageAsset?
+
+  @@index([state])
+  @@index([candidateId])
+  @@index([newsItemId])
+}
+
+/// Grupo de agregação multi-fonte: junta candidatos do mesmo tema (janela temporal) para
+/// produzir UM artigo com os factos de todas as fontes. Ver docs/pipeline/agregacao-multifonte.md.
+
+model AgentDecision {
+  id            String         @id @default(cuid())
+  run           PipelineRun    @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+  pipelineRunId String
+  agent         AgentName
+  fromState     PipelineState?
+  toState       PipelineState?
+  ok            Boolean        @default(true)
+  input         Json?
+  output        Json?
+  model         String?
+  promptVersion String?
+  tokensIn      Int?
+  tokensOut     Int?
+  durationMs    Int?
+  error         String?
+  createdAt     DateTime       @default(now())
+
+  @@index([pipelineRunId])
+  @@index([agent])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Fase 2 — Fact Ledger e Artigo (coração editorial)
+// ─────────────────────────────────────────────────────────────
+
+enum FactStatus {
+  CONFIRMED // confirmado (o Writer só pode usar estes)
+  DOUBTFUL // duvidoso — precisa de verificação humana
+  UNCONFIRMED // não confirmado (rumor, especulação, fonte única)
+}
+
+enum FactType {
+  EVENT // acontecimento (jogo, golo, resultado)
+  TRANSFER // mercado / negociação
+  INJURY // lesão
+  QUOTE // declaração
+  STAT // número / estatística / valor
+  GENERAL // contexto geral
+}
+
+/// Lista fechada de factos autorizados de um run. Depois de trancado (locked),
+/// o Article Writer só pode escrever a partir dos factos CONFIRMED deste ledger.
+model FactLedger {
+  id            String      @id @default(cuid())
+  run           PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+  pipelineRunId String      @unique
+  locked        Boolean     @default(false)
+  facts         Fact[]
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model Fact {
+  id            String     @id @default(cuid())
+  ledger        FactLedger @relation(fields: [ledgerId], references: [id], onDelete: Cascade)
+  ledgerId      String
+  text          String
+  type          FactType   @default(GENERAL)
+  status        FactStatus @default(UNCONFIRMED)
+  confidence    Float      @default(0.5)
+  sourceUrl     String?
+  sourceName    String? // etiqueta da fonte de origem (cruzamento + atribuição na agregação)
+  evidenceQuote String? // excerto curto da fonte que suporta o facto
+  sensitive     Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+
+  @@index([ledgerId])
+}
+
+/// Output do Article Writer + campos SEO/Discover (Fase 3).
+model Article {
+  id              String      @id @default(cuid())
+  run             PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+  pipelineRunId   String      @unique
+  title           String
+  lead            String?
+  body            String
+  wordCount       Int         @default(0)
+  usedFactIds     Json? // IDs dos factos CONFIRMED usados (auditoria anti-invenção)
+  model           String?
+  // ── SEO / Discover (Fase 3) ──
+  slug            String?
+  seoTitle        String?
+  metaDescription String?
+  discoverTitle   String?
+  tags            String[]    @default([])
+  category        String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+/// Relatório de uma etapa de QA (editorial, SEO, imagem, social). Auditável.
+model QAReport {
+  id            String      @id @default(cuid())
+  run           PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+  pipelineRunId String
+  stage         String // "editorial" | "seo" | "image" | "social"
+  agent         AgentName
+  passed        Boolean     @default(true)
+  score         Float?
+  issues        Json? // [{ type, severity, detail }]
+  createdAt     DateTime    @default(now())
+
+  @@index([pipelineRunId])
+}
+
+/// Rascunho no WordPress criado pelo pipeline (nunca publicado sem aprovação humana).
+model WpDraft {
+  id            String      @id @default(cuid())
+  run           PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+  pipelineRunId String      @unique
+  wpPostId      Int?
+  status        String      @default("draft")
+  link          String?
+  simulated     Boolean     @default(false)
+  error         String?
+  publishedAt   DateTime?
+  publishedBy   String? // quem aprovou a publicação (auditoria)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────
+// Fase 5 — Aprovação humana (Telegram + painel)
+// ─────────────────────────────────────────────────────────────
+
+enum ApprovalDecision {
+  APPROVE_ALL // aprovar texto e imagem → publicar
+  APPROVE_TEXT_REJECT_IMAGE // aprovar texto, rejeitar imagem → volta à imagem
+  REJECT_TEXT_APPROVE_IMAGE // rejeitar texto, aprovar imagem → reescreve
+  REJECT_ALL // rejeitar tudo → arquivar
+  WRITE_TOPIC // (gate pré-escrita) escrever este tema
+  SKIP_TOPIC // (gate pré-escrita) ignorar este tema
+  SAVE_DRAFT // guardar como rascunho
+  CANCEL // cancelar → arquivar
+}
+
+/// Pedido de aprovação humana de um run. Enviado por Telegram e/ou decidido no painel.
+model ApprovalRequest {
+  id             String            @id @default(cuid())
+  run            PipelineRun       @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+  pipelineRunId  String            @unique
+  channel        String            @default("telegram") // "telegram" | "painel" | "simulado"
+  chatId         String?
+  messageId      String?
+  imageMessageId String? // id da mensagem da FOTO (o cartão com imagem são 2 mensagens)
+  cardMessageIds Int[]             @default([]) // TODOS os ids de mensagens de cartão já enviados (reenvios incluídos), para aceitar respostas a qualquer um
+  decision       ApprovalDecision?
+  decidedBy      String?
+  decidedAt      DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────
+// Fase 8 — Saúde do site e relatórios
+// ─────────────────────────────────────────────────────────────
+
+/// Snapshot periódico da saúde do sistema (WordPress, pipeline, fontes, filas).
+model SiteHealthReport {
+  id        String   @id @default(cuid())
+  status    String   @default("ok") // "ok" | "warning" | "critical"
+  checks    Json // [{ name, status, detail, value }]
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Fase 4 — Imagem (só pesquisa real, sem geração)
+// ─────────────────────────────────────────────────────────────
+
+/// Imagem destacada proposta para um run. Nunca sintética (sem geração de imagem
+/// que represente falsamente pessoas ou acontecimentos reais). Requer aprovação humana.
+model ImageAsset {
+  id            String      @id @default(cuid())
+  run           PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+  pipelineRunId String      @unique
+  source        String      @default("research") // "research" | "bank" | "simulado"
+  url           String
+  alt           String
+  width         Int?
+  height        Int?
+  bytes         Int?
+  format        String?
+  license       String?
+  attribution   String?
+  isSynthetic   Boolean     @default(false)
+  qaStatus      String      @default("pending") // "pending" | "ok" | "rejected"
+  wpMediaId     Int?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+/// Auditoria de conteúdo (docs/AUDITORIA-CONTEUDO.md). Um lote de triagem do conteúdo antigo.
+/// Nada é apagado sem aprovação humana; este modelo guarda a proposta e a decisão humana.
+model AuditRun {
+  id        String      @id @default(cuid())
+  status    String      @default("done") // "running" | "done" | "error"
+  batchSize Int
+  offset    Int         @default(0) // deslocamento no total de posts (para escalar por lotes)
+  source    String      @default("wp")
+  totals    Json? // {delete,merge,improve,keep,deadPct,aiUsed,aiCostEur,withTraffic}
+  notes     String?
+  items     AuditItem[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+}
+
+/// Uma linha por artigo auditado. suggestedDecision é a PROPOSTA; humanDecision é a ordem do
+/// Hugo; a execução (410/301) só corre depois e guarda revertData para se poder reverter.
+model AuditItem {
+  id                String             @id @default(cuid())
+  run               AuditRun           @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+  auditRunId        String
+  wpPostId          Int
+  url               String
+  title             String
+  publishedAt       DateTime?
+  clicks16m         Int? // null = sem dados GSC
+  impressions16m    Int?
+  indexedGuess      Boolean? // heurística de escala: impressões>0 comporta-se como indexada
+  ageMonths         Int?
+  contentChars      Int?
+  score             Float              @default(0) // prioridade de corte (maior = cortar primeiro)
+  layer             String             @default("data") // "data" | "ai"
+  suggestedDecision AuditDecision
+  reason            String
+  cannibalGroup     String? // chave do grupo de canibalização (títulos quase-iguais)
+  aiModel           String?
+  aiCostEur         Float?
+  humanDecision     AuditHumanDecision @default(PENDING)
+  overrideDecision  AuditDecision? // decisão do Hugo quando OVERRIDE
+  executedAt        DateTime?
+  executionAction   String? // "410" | "301" | "none"
+  revertData        Json?
+  createdAt         DateTime           @default(now())
+
+  @@unique([auditRunId, wpPostId])
+  @@index([auditRunId])
+}
+
+enum AuditDecision {
+  DELETE
+  MERGE
+  IMPROVE
+  KEEP
+}
+
+enum AuditHumanDecision {
+  PENDING
+  ACCEPT
+  REJECT
+  OVERRIDE
+}

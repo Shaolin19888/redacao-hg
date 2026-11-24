@@ -1,0 +1,20 @@
+{
+  "_nota": "Preços por MILHÃO de tokens, em DÓLARES (entrada/saída), conforme as páginas oficiais OpenAI e Anthropic. A conversão para euro aplica usdToEur. Rever de tempos a tempos, os preços das APIs mudam. Editar este ficheiro NÃO exige mexer no código.",
+  "_fontes": [
+    "https://platform.claude.com/docs/en/about-claude/pricing",
+    "https://openai.com/api/pricing/"
+  ],
+  "usdToEur": 0.92,
+  "_nota_sonnet5": "Sonnet 5 está a preço introdutório ($2/$10) até 31 de agosto de 2026; a partir de 1 de setembro passa a $3/$15. Actualizar aqui nessa altura.",
+  "modelos": {
+    "claude-opus-5": { "inputUsdPerMillion": 5.0, "outputUsdPerMillion": 25.0 },
+    "claude-opus-4-8": { "inputUsdPerMillion": 5.0, "outputUsdPerMillion": 25.0 },
+    "claude-sonnet-5": { "inputUsdPerMillion": 2.0, "outputUsdPerMillion": 10.0 },
+    "claude-sonnet-4-6": { "inputUsdPerMillion": 3.0, "outputUsdPerMillion": 15.0 },
+    "claude-sonnet-4-5": { "inputUsdPerMillion": 3.0, "outputUsdPerMillion": 15.0 },
+    "claude-sonnet": { "inputUsdPerMillion": 3.0, "outputUsdPerMillion": 15.0 },
+    "claude-haiku-4-5": { "inputUsdPerMillion": 1.0, "outputUsdPerMillion": 5.0 },
+    "gpt-4o": { "inputUsdPerMillion": 2.5, "outputUsdPerMillion": 10.0 },
+    "gpt-4o-mini": { "inputUsdPerMillion": 0.15, "outputUsdPerMillion": 0.6 }
+  }
+}

@@ -1,0 +1,23 @@
+{
+	email {$CADDY_EMAIL}
+}
+
+{$CADDY_DOMAIN} {
+	reverse_proxy web:3000
+
+	# Segurança
+	header {
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Logs de acesso
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}

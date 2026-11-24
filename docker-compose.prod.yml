@@ -1,0 +1,142 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: redacao_hg
+      POSTGRES_USER: redacao
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U redacao -d redacao_hg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - redacao
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - redacao
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.worker
+    command: ["npx", "prisma", "migrate", "deploy"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://redacao:${POSTGRES_PASSWORD}@postgres:5432/redacao_hg
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - redacao
+    restart: "no"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://redacao:${POSTGRES_PASSWORD}@postgres:5432/redacao_hg
+      REDIS_URL: redis://redis:6379
+      NEXTAUTH_URL: https://${CADDY_DOMAIN}
+      NEXT_OUTPUT: standalone
+    # Sem exposição directa de portas — só acessível via Caddy
+    expose:
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - redacao
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://redacao:${POSTGRES_PASSWORD}@postgres:5432/redacao_hg
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - redacao
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: redacao_hg
+      DB_USER: redacao
+      KEEP_DAYS: "7"
+      BACKUP_DIR: /backups
+    volumes:
+      - ./scripts/backup.sh:/backup.sh:ro
+      - backups_data:/backups
+    entrypoint: >
+      sh -c "apk add --no-cache bash &&
+             echo '0 3 * * * bash /backup.sh >> /var/log/backup.log 2>&1' | crontab - &&
+             crond -f -l 8"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - redacao
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN}
+      CADDY_EMAIL: ${CADDY_EMAIL}
+    volumes:
+      - ./infra/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    depends_on:
+      - web
+    networks:
+      - redacao
+
+networks:
+  redacao:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+  backups_data:
